@@ -1,0 +1,11 @@
+
+{
+  "id": "gn-math-normalizer",
+  "name": "GN Math Normalizer",
+  "version": "2.0.0",
+  "minAppVersion": "1.5.0",
+  "description": "Normalize LaTeX and Markdown copied from Gemini Notebook for clean mathematical notes.",
+  "author": "IS_CABRAL",
+  "isDesktopOnly": true
+}
+
