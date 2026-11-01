@@ -407,6 +407,46 @@ const detectarEnterLaTeX = (plugin) =>
     }
   });
 
+  function pareceExpressaoMatematicaAutonoma(expressao) {
+  let texto = expressao.trim();
+
+    if (!texto) return false;
+    
+    // Preserva valores monetários em reais.
+    if (/\bR\s*\$/i.test(texto)) return false;
+
+  // Títulos Markdown nunca devem ser convertidos.
+  if (/^#{1,6}\s/.test(texto)) return false;
+
+  // Remove textos explicitamente delimitados como conteúdo textual LaTeX.
+  texto = texto.replace(/\\text\s*\{[^{}]*\}/g, ' ');
+
+  // Remove comandos LaTeX, preservando os argumentos matemáticos.
+  texto = texto.replace(/\\[a-zA-Z]+/g, ' ');
+
+  // Remove delimitadores estruturais.
+  texto = texto.replace(/[{}]/g, ' ');
+
+  const palavras = texto.match(/[A-Za-zÀ-ÿ]+/g) || [];
+
+  // Funções matemáticas que podem possuir nomes com várias letras.
+  const funcoesPermitidas = new Set([
+    'sin', 'cos', 'tan',
+    'arcsin', 'arccos', 'arctan',
+    'sinh', 'cosh', 'tanh',
+    'log', 'ln', 'lim',
+    'max', 'min', 'exp',
+    'det', 'gcd'
+  ]);
+
+  // Variáveis de uma letra e funções matemáticas são permitidas.
+  // Palavras comuns indicam provável texto descritivo.
+  return palavras.every(palavra =>
+    palavra.length === 1 ||
+    funcoesPermitidas.has(palavra.toLowerCase())
+  );
+}
+
 class GNMathNormalizer extends Plugin {
   async onload() {
     this.ultimaColagem = null;
@@ -659,6 +699,9 @@ normalizarNotaAberta(editor) {
 
     if (this.linhaDentroBlocoCodigo(editor, linhaAlvo)) return;
 
+    // Não interfere em títulos Markdown.
+    if (/^\s{0,3}#{1,6}\s/.test(linhaOriginal)) return;
+
     // Não interfere em listas, citações ou callouts.
     if (/^\s*(?:>|[-*+]\s|\d+[.)]\s)/.test(linhaOriginal)) return;
     if (/^\s*\[![^\]]+\]/.test(linhaOriginal)) return;
@@ -671,6 +714,9 @@ normalizarNotaAberta(editor) {
       corpo.includes('\\(') ||
       corpo.includes('\\[')
     ) return;
+
+    // Exige que a linha seja uma expressão matemática autônoma.
+    if (!pareceExpressaoMatematicaAutonoma(corpo)) return;
 
     if (!expressaoLaTeXCompleta(corpo)) return;
 
