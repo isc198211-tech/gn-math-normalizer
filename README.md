@@ -33,4 +33,4 @@ This project is developed to improve the workflow of transferring mathematical c
 
 ## License
 
-License information will be added before the first public release.
+[MIT License](LICENSE)
