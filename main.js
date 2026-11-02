@@ -78,6 +78,122 @@ function protegerCodigo(texto) {
   };
 }
 
+
+function protegerReferenciasWiki(texto) {
+  const referencias = [];
+
+  // Gera um marcador que não exista no conteúdo original.
+  let marcador = 'GNWIKIPROTECTED';
+
+  while (texto.includes(marcador)) {
+    marcador += 'X';
+  }
+
+  function proteger(referencia) {
+    const indice = referencias.push(referencia) - 1;
+    return `${marcador}${indice}FIM`;
+  }
+
+  // 1. Protege referências Wiki do Obsidian.
+  let resultado = texto.replace(
+    /!?\[\[[^\]\r\n]*\]\]/g,
+    referencia => proteger(referencia)
+  );
+
+  // Remove o espaço opcional da expressão anterior:
+  // a expressão efetivamente utilizada deve reconhecer ![[...]] e [[...]].
+  // 2. Protege links e imagens Markdown, respeitando delimitadores aninhados.
+  let saida = '';
+  let i = 0;
+
+  function encontrarFechamento(conteudo, inicio, abertura, fechamento) {
+    let profundidade = 1;
+
+    for (let j = inicio; j < conteudo.length; j++) {
+      if (conteudo[j] === '\\') {
+        j++;
+        continue;
+      }
+
+      if (conteudo[j] === abertura) {
+        profundidade++;
+      } else if (conteudo[j] === fechamento) {
+        profundidade--;
+
+        if (profundidade === 0) {
+          return j;
+        }
+      }
+    }
+
+    return -1;
+  }
+
+  while (i < resultado.length) {
+    const inicio = i;
+
+    // Reconhece links [texto](destino) e imagens ![texto](destino).
+    if (resultado[i] === '!') {
+      i++;
+    }
+
+    if (resultado[i] === '[') {
+      const fechamentoRotulo = encontrarFechamento(
+        resultado,
+        i + 1,
+        '[',
+        ']'
+      );
+
+      if (fechamentoRotulo !== -1) {
+        let aberturaDestino = fechamentoRotulo + 1;
+
+        while (
+          aberturaDestino < resultado.length &&
+          /\s/.test(resultado[aberturaDestino])
+        ) {
+          aberturaDestino++;
+        }
+
+        if (resultado[aberturaDestino] === '(') {
+          const fechamentoDestino = encontrarFechamento(
+            resultado,
+            aberturaDestino + 1,
+            '(',
+            ')'
+          );
+
+          if (fechamentoDestino !== -1) {
+            saida += proteger(
+              resultado.slice(inicio, fechamentoDestino + 1)
+            );
+
+            i = fechamentoDestino + 1;
+            continue;
+          }
+        }
+      }
+    }
+
+    // Não encontrou uma referência completa: mantém o caractere original.
+    saida += resultado.slice(inicio, inicio + 1);
+    i = inicio + 1;
+  }
+
+  return {
+    texto: saida,
+
+    restaurar(conteudo) {
+      return referencias.reduce(
+        (resultado, referencia, indice) =>
+          resultado.split(`${marcador}${indice}FIM`).join(referencia),
+        conteudo
+      );
+    }
+  };
+}
+
+    
 function pareceFormula(expressao) {
   const e = expressao.trim();
   if (!e) return false;
@@ -351,7 +467,8 @@ function limparLatex(texto) {
 
   // Protege código antes de decodificar HTML, normalizar Unicode ou aplicar regex.
   const codigo = protegerCodigo(texto);
-  let s = codigo.texto;
+  const referenciasWiki = protegerReferenciasWiki(codigo.texto);
+  let s = referenciasWiki.texto;
   s = decodificarHTML(s).normalize('NFKC');
   s = normalizarQuebras(s);
   s = protegerMoeda(s);
@@ -367,6 +484,7 @@ function limparLatex(texto) {
   s = converterFormulasIsoladas(s);
   s = normalizarCallouts(s);
   s = s.replace(MOEDA_TOKEN, 'R\\$');
+  s = referenciasWiki.restaurar(s);
   s = codigo.restaurar(s);
   return s.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
 }
@@ -917,3 +1035,4 @@ normalizarNotaAberta(editor) {
 }
 
 module.exports = GNMathNormalizer;
+/* nosourcemap */
