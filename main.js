@@ -1,5 +1,5 @@
 const { Plugin, Notice, MarkdownView } = require('obsidian');
-const { EditorView } = require('@codemirror/view');
+const { EditorView } = require('@codemirror/view'); 
 
 const {
   limparLatex,
