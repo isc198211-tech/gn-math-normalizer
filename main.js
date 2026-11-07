@@ -1,5 +1,5 @@
 const { Plugin, Notice, MarkdownView } = require('obsidian');
-const { EditorView } = require('@codemirror/view'); 
+const { EditorView } = require('@codemirror/view');
 
 const {
   limparLatex,
@@ -327,28 +327,126 @@ function converterDelimitadoresLatex(texto) {
   texto = texto.replace(/\\+\(([\s\S]*?)\\+\)/g, (_m, c) => `$${c.trim()}$`);
   return texto;
 }
+    
+function corrigirEquacoesComDelimitadoresParciais(texto) {
+  return texto.split('\n').map(linha => {
+
+    // Não interfere em blocos de matemática já delimitados.
+    if (linha.includes('$$')) return linha;
+
+    // Localiza os delimitadores matemáticos simples.
+    const delimitadores = [...linha.matchAll(/(?<!\\)\$(?!\$)/g)];
+
+    // Exige exatamente um par de cifrões.
+    if (delimitadores.length !== 2) return linha;
+
+    const abertura = delimitadores[0].index;
+    const fechamento = delimitadores[1].index;
+
+    const prefixo = linha.slice(0, abertura);
+    const miolo = linha.slice(abertura + 1, fechamento);
+    const sufixo = linha.slice(fechamento + 1);
+
+    // Exige início claramente matemático.
+    if (!/^\s*[\d(]/.test(prefixo)) return linha;
+
+    // Exige uma igualdade ou relação matemática anterior ao cifrão.
+    if (!/[=≈≤≥]/.test(prefixo)) return linha;
+
+    const expressao = (prefixo + miolo + sufixo).trim();
+
+    // Aceita somente caracteres compatíveis com expressões matemáticas.
+    const caracteresPermitidos =
+      /^[0-9A-Za-z_{}()[\].,+\-*/^=<>≤≥≈×− \t]+$/;
+
+    if (!caracteresPermitidos.test(expressao)) return linha;
+
+    if (!/\d/.test(expressao)) return linha;
+
+    // Normaliza operadores Unicode.
+    let formula = expressao
+      .replace(/×/g, '\\times')
+      .replace(/−/g, '-');
+
+    // Recupera o índice da variável i_r.
+    formula = formula.replace(
+      /([(+\-*/=])ir(?=[)\s*/+\-=])/g,
+      '$1i_r'
+    );
+
+    // Preserva a vírgula decimal no LaTeX.
+    formula = formula.replace(
+      /(\d),(\d)/g,
+      '$1{,}$2'
+    );
+
+    return `$${formula}$`;
+
+  }).join('\n');
+}    
+
 
 function corrigirDelimitadoresDuplicadosEmBlocos(texto) {
-  // Trata tanto display multilinha quanto o caso $$ $x=1$ $$ na mesma linha.
+
+  // Corrige blocos matemáticos delimitados na mesma linha.
   texto = texto.replace(/\$\$([^\n]*?)\$\$/g, (m, corpo) => {
-    const limpo = corpo.replace(/(^|[ \t])\$(?!\$)([^$\n]+?)\$(?!\$)(?=[ \t]|$)/g, '$1$2');
+    const limpo = corpo.replace(
+      /(^|[ \t])\$(?!\$)([^$\n]+?)\$(?!\$)(?=[ \t]|$)/g,
+      '$1$2'
+    );
+
     return `$$${limpo}$$`;
   });
 
   const linhas = texto.split('\n');
   const saida = [];
+
   let dentro = false;
+
   for (let linha of linhas) {
-    const semPrefixo = linha.replace(/^[ \t]*(?:>[ \t]?)*/, '').trim();
-    if (!dentro && semPrefixo === '$$') { dentro = true; saida.push(linha); continue; }
-    if (dentro && semPrefixo === '$$') { dentro = false; saida.push(linha); continue; }
-    if (dentro) {
-      linha = linha.replace(/^([ \t]*(?:>[ \t]?)*)\$([^$\n]+?)\$(?=[ \t]*$)/, '$1$2');
+
+    const semPrefixo = linha
+      .replace(/^[ \t]*(?:>[ \t]?)*/, '')
+      .trim();
+
+    // Identifica a abertura e o fechamento do bloco matemático.
+    if (!dentro && semPrefixo === '$$') {
+      dentro = true;
+      saida.push(linha);
+      continue;
     }
+
+    if (dentro && semPrefixo === '$$') {
+      dentro = false;
+      saida.push(linha);
+      continue;
+    }
+
+    if (dentro) {
+
+      // Corrige fator matemático com cifrões indevidos após multiplicação.
+      // Exemplo: \times $1 + (-0,05)$
+      // Resultado: \times (1 + (-0,05))
+      linha = linha.replace(
+        /(\\times|×)[ \t]*\$([^$\n]+?)\$(?=[ \t]*$)/,
+        (_m, operador, expressao) =>
+          `${operador} (${expressao.trim()})`
+      );
+
+      // Mantém a correção anterior para expressões delimitadas
+      // por cifrões em uma linha inteira.
+      linha = linha.replace(
+        /^([ \t]*(?:>[ \t]?)*)\$([^$\n]+?)\$(?=[ \t]*$)/,
+        '$1$2'
+      );
+    }
+
     saida.push(linha);
   }
+
   return saida.join('\n');
 }
+
 
 function corrigirConteudoFormula(conteudo) {
   let f = conteudo.replace(/\\_(?=\{)/g, '_');
@@ -460,7 +558,13 @@ function converterFormulasIsoladas(texto) {
       : linha);
   }
   return resultado.join('\n');
-}
+    }
+    
+    function corrigirIndicadoresLegais(texto) {
+      return texto
+      .replace(/(\d+)\s*o\b/gi, '$1º')
+      .replace(/\bn\.o\b/gi, 'n.º');
+    }
 
 function limparLatex(texto) {
   if (typeof texto !== 'string' || !texto) return texto;
@@ -473,21 +577,29 @@ function limparLatex(texto) {
   s = normalizarQuebras(s);
   s = protegerMoeda(s);
   s = corrigirMarkdownEscapado(s);
+  s = corrigirIndicadoresLegais(s);
   s = corrigirIndicesMatematicos(s);
   s = normalizarDelimitadoresEscapados(s);
-  s = converterDelimitadoresLatex(s);
-  s = corrigirDelimitadoresDuplicadosEmBlocos(s);
+s = converterDelimitadoresLatex(s);
+
+// Corrige equações parcialmente delimitadas do Gemini Notebook.
+s = corrigirEquacoesComDelimitadoresParciais(s);
+
+s = corrigirDelimitadoresDuplicadosEmBlocos(s);
   s = escaparPercentualEmMatematica(s);
   s = converterColchetesMatematicos(s);
   s = envolverEquacoesComLeftRight(s);
   s = removerBarrasSoltas(s);
   s = converterFormulasIsoladas(s);
   s = normalizarCallouts(s);
-  s = s.replace(MOEDA_TOKEN, 'R\\$');
+  s = s.split(MOEDA_TOKEN).join('R\\$');
   s = referenciasWiki.restaurar(s);
   s = codigo.restaurar(s);
   return s.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
 }
+
+
+    
 return {
   limparLatex,
   protegerCodigo,
@@ -499,6 +611,10 @@ return {
 const detectarEnterLaTeX = (plugin) =>
   EditorView.updateListener.of((update) => {
     if (!update.docChanged) return;
+
+    // Identifica imediatamente o editor que originou a alteração.
+    const editor = plugin.obterEditorDaViewCodeMirror(update.view);
+    if (!editor) return;
 
     for (const transacao of update.transactions) {
       if (!transacao.docChanged) continue;
@@ -514,7 +630,7 @@ const detectarEnterLaTeX = (plugin) =>
             plugin.timersPendentes.delete(timer);
 
             plugin.normalizarLinhaConfirmada(
-              plugin.app.workspace.getActiveViewOfType(MarkdownView)?.editor,
+              editor,
               linhaAnterior
             );
           }, 50);
@@ -596,33 +712,35 @@ class GNMathNormalizer extends Plugin {
     }));
 
 // Normaliza automaticamente a nota inteira sempre que ela for aberta.
-const agendarNormalizacao = (file) => {
-  if (!file) return;
+// Agenda a normalização das notas abertas, inclusive em janelas Pop-out.
+const agendarNormalizacao = (file = null) => {
+  const caminho = file?.path ?? null;
 
   const timer = setTimeout(() => {
     this.timersPendentes.delete(timer);
-
-    const arquivoAtivo = this.app.workspace.getActiveFile();
-    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-
-    if (!view || !arquivoAtivo || arquivoAtivo.path !== file.path) return;
-
-    this.normalizarNotaAberta(view.editor);
+    this.normalizarTodasNotasAbertas(caminho);
   }, 500);
 
   this.timersPendentes.add(timer);
 };
 
-// Executa ao abrir ou trocar de nota.
+// Executa quando uma nota é aberta ou trocada.
 this.registerEvent(
   this.app.workspace.on('file-open', (file) => {
     agendarNormalizacao(file);
   })
 );
 
-// Também verifica a nota que já estava aberta durante a inicialização.
+// Executa também quando uma nova janela Pop-out é criada.
+this.registerEvent(
+  this.app.workspace.on('window-open', () => {
+    agendarNormalizacao();
+  })
+);
+
+// Verifica todas as notas já abertas durante a inicialização.
 this.app.workspace.onLayoutReady(() => {
-  agendarNormalizacao(this.app.workspace.getActiveFile());
+  agendarNormalizacao();
 });
 
     // Mantém o fluxo original de colagem e sua normalização integral.
@@ -633,7 +751,19 @@ this.app.workspace.onLayoutReady(() => {
         const original = clipboard.getData('text/plain');
         if (typeof original !== 'string' || !original.trim()) return;
         const inicio = editor.posToOffset(editor.getCursor('from'));
-        const filePath = this.app.workspace.getActiveFile()?.path ?? null;
+        let filePath = null;
+
+        this.app.workspace.iterateAllLeaves((leaf) => {
+          const view = leaf.view;
+
+          if (
+            view instanceof MarkdownView &&
+            view.editor === editor &&
+            view.file
+          ) {
+            filePath = view.file.path;
+          }
+        });
         const resultado = limparLatex(original);
         if (resultado !== original) {
           evt.preventDefault();
@@ -666,6 +796,38 @@ this.app.workspace.onLayoutReady(() => {
     for (const timer of this.timersPendentes ?? []) clearTimeout(timer);
     this.timersPendentes?.clear();
   }
+
+  obterEditorDaViewCodeMirror(cmView) {
+  if (!cmView?.dom) return null;
+
+  let editorEncontrado = null;
+
+  this.app.workspace.iterateAllLeaves((leaf) => {
+    const view = leaf.view;
+
+    if (
+      view instanceof MarkdownView &&
+      view.containerEl?.contains(cmView.dom)
+    ) {
+      editorEncontrado = view.editor;
+    }
+  });
+
+  return editorEncontrado;
+}
+
+normalizarTodasNotasAbertas(caminho = null) {
+  this.app.workspace.iterateAllLeaves((leaf) => {
+    const view = leaf.view;
+
+    if (!(view instanceof MarkdownView)) return;
+    if (!view.file || !view.editor) return;
+
+    if (caminho && view.file.path !== caminho) return;
+
+    this.normalizarNotaAberta(view.editor);
+  });
+}
 
 normalizarNotaAberta(editor) {
   if (!editor || this.normalizacaoEmAndamento.has(editor)) return;
