@@ -313,20 +313,56 @@ function corrigirIndicesMatematicos(texto) {
 }
 
 function protegerMoeda(texto) {
-  return texto.replace(/\bR\\?\$/gi, MOEDA_TOKEN);
+  return texto
+    .replace(/\\text\{R\\?\}\$/gi, `\\text{${MOEDA_TOKEN}}`)
+    .replace(/\bR\\?\$/gi, MOEDA_TOKEN);
 }
 
 function normalizarDelimitadoresEscapados(texto) {
   return texto.replace(/\\+\$/g, '$');
 }
 
+
 function converterDelimitadoresLatex(texto) {
+  // Protege os blocos matemáticos existentes.
+  const blocosProtegidos = [];
+
+  texto = texto.replace(
+    /\$\$[\s\S]*?\$\$/g,
+    bloco => {
+      const marcador = `ZXQDISPLAY${blocosProtegidos.length}QXZ`;
+      blocosProtegidos.push(bloco);
+      return marcador;
+    }
+  );
+
   // Recupera a corrupção histórica \left$...\right$.
-  texto = texto.replace(/\\left\\?\$([\s\S]*?)\\right\\?\$/g, (_m, c) => `\\left[${c.trim()}\\right]`);
-  texto = texto.replace(/\\+\[([\s\S]*?)\\+\]/g, (_m, c) => `\n$$\n${c.trim()}\n$$\n`);
-  texto = texto.replace(/\\+\(([\s\S]*?)\\+\)/g, (_m, c) => `$${c.trim()}$`);
+  texto = texto.replace(
+    /\\left\\?\$([\s\S]*?)\\right\\?\$/g,
+    (_m, c) => `\\left[${c.trim()}\\right]`
+  );
+
+  // Converte \[...\] em blocos matemáticos.
+  texto = texto.replace(
+    /\\+\[([\s\S]*?)\\+\]/g,
+    (_m, c) => `\n$$\n${c.trim()}\n$$\n`
+  );
+
+  // Converte \(...\) em matemática inline.
+  texto = texto.replace(
+    /\\+\(([\s\S]*?)\\+\)/g,
+    (_m, c) => `$${c.trim()}$`
+  );
+
+  // Restaura os blocos matemáticos originais.
+  texto = texto.replace(
+    /ZXQDISPLAY(\d+)QXZ/g,
+    (_m, indice) => blocosProtegidos[Number(indice)]
+  );
+
   return texto;
 }
+
     
 function corrigirEquacoesComDelimitadoresParciais(texto) {
   return texto.split('\n').map(linha => {
@@ -421,7 +457,12 @@ function corrigirDelimitadoresDuplicadosEmBlocos(texto) {
       saida.push(linha);
       continue;
     }
-
+    // Recupera fechamento incompleto de bloco matemático.
+    if (dentro && semPrefixo === '$') {
+        dentro = false;
+        saida.push(linha.replace('$', () => '$$'));
+        continue;
+    }
     if (dentro) {
 
       // Corrige fator matemático com cifrões indevidos após multiplicação.
@@ -433,17 +474,17 @@ function corrigirDelimitadoresDuplicadosEmBlocos(texto) {
           `${operador} (${expressao.trim()})`
       );
 
-      // Mantém a correção anterior para expressões delimitadas
-      // por cifrões em uma linha inteira.
-      linha = linha.replace(
-        /^([ \t]*(?:>[ \t]?)*)\$([^$\n]+?)\$(?=[ \t]*$)/,
-        '$1$2'
-      );
+      // Remove delimitadores matemáticos simples dentro de blocos $$...$$.
+// Também corrige expressões que não ocupam a linha inteira.
+linha = linha.replace(
+  /\$(?!\$)([^$\n]+?)\$(?!\$)/g,
+  '$1'
+);
     }
 
     saida.push(linha);
   }
-
+ 
   return saida.join('\n');
 }
 
@@ -547,8 +588,8 @@ function converterFormulasIsoladas(texto) {
 
     const temIndice = /[MJ]_\{\\text\{/.test(conteudo);
 
-    // Reconhece expressões matemáticas que começam com comandos estruturais.
-    //const comandoNoInicio = /^\\(?:frac|dfrac|tfrac|sqrt|sum|prod|int)\b/.test(conteudo);
+// Reconhece expressões matemáticas que começam com comandos estruturais.
+//const comandoNoInicio = /^\\(?:frac|dfrac|tfrac|sqrt|sum|prod|int)\\b/.test(conteudo);
 
     const formulaReconhecida =
         temOperador && (temEstrutura || temIndice);
@@ -566,6 +607,201 @@ function converterFormulasIsoladas(texto) {
       .replace(/\bn\.o\b/gi, 'n.º');
     }
 
+
+
+function converterEquacoesEmParagrafos(texto) {
+  const linhas = texto.split('\n');
+
+  const identificador = String.raw`[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ0-9]*(?:_(?:\{[^{}\n]+\}|\([^()\n]+\)|[A-Za-zÀ-ÿ0-9]+))?(?:\([^()\n]+\))?`;
+
+  const numero = String.raw`\d+(?:[.,]\d+)?(?:%|[kKmM])?`;
+
+  const termo = String.raw`(?:${identificador}|${numero})`;
+
+  const expressao = String.raw`${termo}(?:\s*[-+*/×÷]\s*${termo})*`;
+
+  const padrao = new RegExp(
+    String.raw`(^|[^A-Za-zÀ-ÿ0-9_])(${expressao}\s*=\s*${expressao}(?:\s*=\s*${expressao})*)(?![A-Za-zÀ-ÿ0-9_])`,
+    'g'
+  );
+
+  let dentroBloco = false;
+
+  return linhas.map(linha => {
+    const conteudo = linha.trim();
+
+    const semPrefixo = conteudo
+      .replace(/^(?:>\s?)*/, '')
+      .trim();
+
+    // Identifica abertura e fechamento de blocos matemáticos.
+    if (semPrefixo === '$$') {
+      dentroBloco = !dentroBloco;
+      return linha;
+    }
+
+    // Nunca reinsere delimitadores inline dentro de $$...$$.
+    if (dentroBloco) {
+      return linha;
+    }
+
+    // Preserva expressões que já possuem delimitadores.
+    if (
+      linha.includes('$') ||
+      linha.includes('\\(') ||
+      linha.includes('\\[') ||
+      /^\s*#{1,6}\s/.test(linha)
+    ) {
+      return linha;
+    }
+
+    return linha.replace(
+      padrao,
+      (correspondencia, anterior, formula) => {
+
+        const possuiEstruturaMatematica =
+          /[-+*/×÷]/.test(formula) ||
+          formula.includes('_') ||
+          /[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ0-9]*\(/.test(formula);
+
+        if (!possuiEstruturaMatematica) {
+          return correspondencia;
+        }
+
+        return `${anterior}$${formula}$`;
+      }
+    );
+  }).join('\n');
+}
+
+
+    
+
+function converterExpressoesSemIgualdade(texto) {
+  const linhas = texto.split('\n');
+
+  const normalizarSubscritosEExpoentes = (formula) => {
+    // x_i -> x_{i}
+    formula = formula.replace(
+      /([A-Za-z])_([A-Za-z0-9]+)/g,
+      '$1_{$2}'
+    );
+
+    // x² -> x^{2}; x³ -> x^{3} etc.
+    const expoentes = {
+      '⁰': '0',
+      '¹': '1',
+      '²': '2',
+      '³': '3',
+      '⁴': '4',
+      '⁵': '5',
+      '⁶': '6',
+      '⁷': '7',
+      '⁸': '8',
+      '⁹': '9'
+    };
+
+    formula = formula.replace(
+      /([A-Za-z])([⁰¹²³⁴⁵⁶⁷⁸⁹]+)/g,
+      (_, base, expoente) =>
+        `${base}^{${[...expoente].map(c => expoentes[c]).join('')}}`
+    );
+
+    // A^(-1) -> A^{-1}
+    formula = formula.replace(
+      /([A-Za-z])\^\((-?\d+)\)/g,
+      '$1^{$2}'
+    );
+
+    // C_(N,n) -> C_{N,n}
+    formula = formula.replace(
+      /([A-Za-z])_\(([^()\n]+)\)/g,
+      '$1_{$2}'
+    );
+
+    return formula;
+  };
+
+  let dentroBloco = false;
+
+  return linhas.map(linha => {
+    const conteudo = linha.trim();
+
+    const semPrefixo = conteudo
+      .replace(/^(?:>\s?)*/, '')
+      .trim();
+
+    // Controla abertura e fechamento de blocos $$...$$.
+    if (semPrefixo === '$$') {
+      dentroBloco = !dentroBloco;
+      return linha;
+    }
+
+    // Não interfere em fórmulas inline ou delimitadores existentes.
+    if (
+      linha.includes('$') ||
+      linha.includes('\\(') ||
+      linha.includes('\\[') ||
+      /^\s*#{1,6}\s/.test(linha)
+    ) {
+      return linha;
+    }
+
+    let resultado = linha;
+
+    // Dentro de blocos $$...$$, não inserir delimitadores inline.
+    const delimitar = formula =>
+      dentroBloco ? formula : `$${formula}$`;
+
+    // Somatórios: ∑_(i=1)^n x_i
+    resultado = resultado.replace(
+      /[∑Σ]\s*_\s*\(([^()\n]+)\)\s*\^\s*([A-Za-z0-9]+)\s+([A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)?)/g,
+      (_, inferior, superior, termo) => {
+        const indice = normalizarSubscritosEExpoentes(termo);
+
+        return delimitar(
+          `\\sum_{${inferior}}^{${superior}} ${indice}`
+        );
+      }
+    );
+
+    // Raízes: √(25) -> \sqrt{25}
+    resultado = resultado.replace(
+      /√\s*\(([^()\n]+)\)/g,
+      (_, radicando) =>
+        delimitar(`\\sqrt{${radicando}}`)
+    );
+
+    // Expoentes negativos: A^(-1), (1+i)^(-1).
+    resultado = resultado.replace(
+      /(\([^()\n]+\)|[A-Za-z])\^\((-?\d+)\)/g,
+      (_, base, expoente) =>
+        delimitar(`${base}^{${expoente}}`)
+    );
+
+    // Expoentes Unicode protegidos antes da normalização NFKC.
+    resultado = resultado.replace(
+      /([A-Za-z])((?:ZXQEXP[0-9]QXZ)+)/g,
+      (_, base, marcadores) => {
+        const expoente = [...marcadores.matchAll(/ZXQEXP([0-9])QXZ/g)]
+          .map(m => m[1])
+          .join('');
+
+        return delimitar(`${base}^{${expoente}}`);
+      }
+    );
+
+    // Subscritos explícitos: C_(N,n) -> C_{N,n}
+    resultado = resultado.replace(
+      /([A-Za-z])_\(([^()\n]+)\)/g,
+      (_, base, indice) =>
+        delimitar(`${base}_{${indice}}`)
+    );
+
+    return resultado;
+  }).join('\n');
+}
+
 function limparLatex(texto) {
   if (typeof texto !== 'string' || !texto) return texto;
 
@@ -573,24 +809,51 @@ function limparLatex(texto) {
   const codigo = protegerCodigo(texto);
   const referenciasWiki = protegerReferenciasWiki(codigo.texto);
   let s = referenciasWiki.texto;
-  s = decodificarHTML(s).normalize('NFKC');
+  
+s = decodificarHTML(s);
+
+// Protege expoentes Unicode antes da normalização NFKC.
+const mapaExpoentes = {
+  '⁰': 'ZXQEXP0QXZ',
+  '¹': 'ZXQEXP1QXZ',
+  '²': 'ZXQEXP2QXZ',
+  '³': 'ZXQEXP3QXZ',
+  '⁴': 'ZXQEXP4QXZ',
+  '⁵': 'ZXQEXP5QXZ',
+  '⁶': 'ZXQEXP6QXZ',
+  '⁷': 'ZXQEXP7QXZ',
+  '⁸': 'ZXQEXP8QXZ',
+  '⁹': 'ZXQEXP9QXZ'
+};
+
+s = s.replace(
+  /[⁰¹²³⁴⁵⁶⁷⁸⁹]/g,
+  caractere => mapaExpoentes[caractere]
+);
+
+  s = s.normalize('NFKC');
+
   s = normalizarQuebras(s);
   s = protegerMoeda(s);
   s = corrigirMarkdownEscapado(s);
   s = corrigirIndicadoresLegais(s);
   s = corrigirIndicesMatematicos(s);
   s = normalizarDelimitadoresEscapados(s);
-s = converterDelimitadoresLatex(s);
 
-// Corrige equações parcialmente delimitadas do Gemini Notebook.
-s = corrigirEquacoesComDelimitadoresParciais(s);
+  // Corrige delimitadores simples indevidos dentro de blocos matemáticos.
+  s = corrigirDelimitadoresDuplicadosEmBlocos(s);
 
-s = corrigirDelimitadoresDuplicadosEmBlocos(s);
+  s = converterDelimitadoresLatex(s);
+
+  // Corrige equações parcialmente delimitadas.
+  s = corrigirEquacoesComDelimitadoresParciais(s);
   s = escaparPercentualEmMatematica(s);
   s = converterColchetesMatematicos(s);
   s = envolverEquacoesComLeftRight(s);
   s = removerBarrasSoltas(s);
   s = converterFormulasIsoladas(s);
+  s = converterEquacoesEmParagrafos(s);
+  s = converterExpressoesSemIgualdade(s);
   s = normalizarCallouts(s);
   s = s.split(MOEDA_TOKEN).join('R\\$');
   s = referenciasWiki.restaurar(s);
@@ -693,7 +956,9 @@ class GNMathNormalizer extends Plugin {
     // A normalização automática é deliberadamente conservadora:
     // só examina a linha editada e só atua quando há um padrão LaTeX reconhecível.
     this.registerEvent(this.app.workspace.on('editor-change', (editor) => {
-      if (!editor || this.normalizacaoEmAndamento.has(editor)) return;
+  if (!editor) return;
+
+  if (this.normalizacaoEmAndamento.has(editor)) return;
 
       const anterior = this.timersNormalizacao.get(editor);
       if (anterior) {
@@ -713,16 +978,52 @@ class GNMathNormalizer extends Plugin {
 
 // Normaliza automaticamente a nota inteira sempre que ela for aberta.
 // Agenda a normalização das notas abertas, inclusive em janelas Pop-out.
+
+// Agenda a normalização e repete a tentativa enquanto o editor não estiver pronto.
+
 const agendarNormalizacao = (file = null) => {
   const caminho = file?.path ?? null;
 
-  const timer = setTimeout(() => {
+  let tentativa = 0;
+  const maxTentativas = 12;
+  const intervalo = 250;
+
+  const executar = async () => {
+    try {
+      const pronto = await this.normalizarTodasNotasAbertas(caminho);
+
+      if (pronto || tentativa >= maxTentativas) return;
+
+      tentativa++;
+
+      let timer;
+
+      timer = setTimeout(() => {
+        this.timersPendentes.delete(timer);
+        executar();
+      }, intervalo);
+
+      this.timersPendentes.add(timer);
+
+    } catch (erro) {
+      console.error(
+        '[GN Math Normalizer] Falha no agendamento da normalização:',
+        erro
+      );
+    }
+  };
+
+  let timer;
+
+  timer = setTimeout(() => {
     this.timersPendentes.delete(timer);
-    this.normalizarTodasNotasAbertas(caminho);
-  }, 500);
+    executar();
+  }, intervalo);
 
   this.timersPendentes.add(timer);
 };
+
+
 
 // Executa quando uma nota é aberta ou trocada.
 this.registerEvent(
@@ -816,20 +1117,64 @@ this.app.workspace.onLayoutReady(() => {
   return editorEncontrado;
 }
 
-normalizarTodasNotasAbertas(caminho = null) {
+
+
+async normalizarTodasNotasAbertas(caminho = null) {
+  let encontrouEditorPronto = false;
+  let existeEditorPendente = false;
+
+  const tarefasNormalizacao = [];
+
   this.app.workspace.iterateAllLeaves((leaf) => {
     const view = leaf.view;
 
     if (!(view instanceof MarkdownView)) return;
-    if (!view.file || !view.editor) return;
 
-    if (caminho && view.file.path !== caminho) return;
+    // Quando houver um arquivo específico, ignora as demais notas.
+    if (caminho && view.file?.path !== caminho) return;
 
-    this.normalizarNotaAberta(view.editor);
+    if (!view.file || !view.editor) {
+      existeEditorPendente = true;
+      return;
+    }
+
+    const viewAtiva =
+      this.app.workspace.getActiveViewOfType(MarkdownView);
+
+    const conteudo = view.editor.getValue();
+
+    // Aguarda o carregamento do conteúdo de arquivos não vazios.
+    if (!conteudo && (view.file.stat?.size ?? 0) > 0) {
+      existeEditorPendente = true;
+      return;
+    }
+
+    encontrouEditorPronto = true;
+
+    console.log(
+      '[GN Math Normalizer] Nota identificada para normalização retroativa:',
+      view.file.path,
+      '| Caracteres:',
+      conteudo.length
+    );
+
+    // Registra a operação para aguardar sua conclusão.
+    tarefasNormalizacao.push(
+      this.normalizarNotaAberta(view.editor, view)
+    );
   });
+
+  // Aguarda todas as normalizações e respectivas tentativas de gravação.
+  await Promise.all(tarefasNormalizacao);
+
+  return encontrouEditorPronto && !existeEditorPendente;
 }
 
-normalizarNotaAberta(editor) {
+
+
+
+
+async normalizarNotaAberta(editor, view = null) {
   if (!editor || this.normalizacaoEmAndamento.has(editor)) return;
 
   try {
@@ -844,11 +1189,15 @@ normalizarNotaAberta(editor) {
     // Evita modificar o documento quando não há correções.
     if (texto === original) return;
 
+    // Identifica o modo atual da visualização.
+    const modo = view?.getMode?.() ?? 'source';
+
     // Guarda a posição atual do cursor/seleção.
     const anchorOffset = editor.posToOffset(editor.getCursor('from'));
     const headOffset = editor.posToOffset(editor.getCursor('to'));
 
-    // Identifica as partes inalteradas para preservar a posição do cursor.
+    // Identifica as partes inalteradas para preservar
+    // o cálculo da posição do cursor.
     let prefixoComum = 0;
 
     while (
@@ -893,21 +1242,37 @@ normalizarNotaAberta(editor) {
       Math.min(texto.length, mapearOffset(headOffset))
     );
 
-    // Evita que a alteração acione novamente a normalização automática.
+    // Evita que a alteração acione novamente
+    // a normalização automática.
     this.normalizacaoEmAndamento.add(editor);
 
-    // Substitui o documento inteiro em uma única operação.
-    editor.replaceRange(
-      texto,
-      { line: 0, ch: 0 },
-      editor.offsetToPos(original.length)
-    );
+    // Atualiza o documento conforme o modo da visualização.
+    if (modo === 'preview') {
 
-    // Restaura a posição do cursor ou da seleção.
-    editor.setSelection(
-      editor.offsetToPos(novoAnchor),
-      editor.offsetToPos(novoHead)
-    );
+      if (!view || typeof view.setViewData !== 'function') {
+        throw new Error(
+          'MarkdownView.setViewData() não está disponível no modo preview.'
+        );
+      }
+
+      // Atualiza os dados internos da MarkdownView.
+      // false preserva o estado da nota atual.
+      view.setViewData(texto, false);
+
+    } else {
+
+      // Mantém o procedimento já validado no modo source.
+      editor.replaceRange(
+        texto,
+        { line: 0, ch: 0 },
+        editor.offsetToPos(original.length)
+      );
+    }
+
+    // Solicita e aguarda a gravação efetiva pelo Obsidian.
+    if (view && typeof view.save === 'function') {
+      await view.save();
+    }
 
     // Libera a trava após a transação de edição.
     setTimeout(() => {
@@ -916,6 +1281,7 @@ normalizarNotaAberta(editor) {
 
     console.log(
       '[GN Math Normalizer] Nota aberta e normalizada:',
+      view?.file?.path ??
       this.app.workspace.getActiveFile()?.path
     );
 
@@ -928,6 +1294,8 @@ normalizarNotaAberta(editor) {
     );
   }
 }
+
+
 
     linhaDentroBlocoCodigo(editor, linhaAlvo) {
     let cercaAtual = null;
@@ -1067,7 +1435,8 @@ normalizarNotaAberta(editor) {
       /\\+\[[^\n]*?\\+\]/.test(corpo) ||
       /\\left\\?\$[\s\S]*?\\right\\?\$/.test(corpo) ||
       /\\_(?=\{)/.test(corpo) ||
-      /\$\$[^\n]*?\$[^$\n]+\$[^$\n]*?\$\$/.test(corpo);
+      /\$\$[^\n]*?\$[^$\n]+\$[^$\n]*?\$\$/.test(corpo) ||
+      /\\text\{R\}\$/i.test(corpo);
 
       if (!temProblemaLaTeX) return;
 
@@ -1153,21 +1522,53 @@ normalizarNotaAberta(editor) {
     }
   }
 
-  async normalizarSelecao() {
-    try {
-      const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-      if (!view) return new Notice('Abra uma nota no editor Markdown.');
-      const original = view.editor.getSelection();
-      if (!original.trim()) return new Notice('Selecione o texto da nota que deseja normalizar.');
-      const resultado = limparLatex(original);
-      if (resultado === original) return new Notice('A seleção não exigiu alterações.');
-      view.editor.replaceSelection(resultado);
-      new Notice('Texto selecionado normalizado.');
-    } catch (erro) {
-      console.error('[GN Math Normalizer]', erro);
-      new Notice(erro.message || 'Falha ao normalizar a seleção.');
+
+
+async normalizarSelecao() {
+  try {
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+
+    if (!view) {
+      return new Notice('Abra uma nota no editor Markdown.');
     }
+
+    const original = view.editor.getSelection();
+
+    if (!original.trim()) {
+      return new Notice('Selecione o texto da nota que deseja normalizar.');
+    }
+
+    // Executa a normalização do texto selecionado.
+    const resultado = limparLatex(original);
+
+    // Substitui a seleção pelo conteúdo normalizado.
+    if (resultado !== original) {
+      view.editor.replaceSelection(resultado);
+
+      // Recupera exatamente o trecho inserido no editor.
+      const cursorFinal = view.editor.getCursor();
+      const fim = view.editor.posToOffset(cursorFinal);
+      const inicio = view.editor.offsetToPos(
+        fim - resultado.length
+      );
+
+      const trechoGravado = view.editor.getRange(
+        inicio,
+        cursorFinal
+      );
+    }
+
+    new Notice(
+      resultado !== original
+        ? 'Texto selecionado normalizado.'
+        : 'Nenhuma alteração necessária.'
+    );
+
+  } catch (erro) {
+    console.error('[GN Math Normalizer]', erro);
+    new Notice(erro.message || 'Falha ao normalizar a seleção.');
   }
+}
 
   async normalizarEInserir() {
     try {
