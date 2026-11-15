@@ -13,6 +13,12 @@ const {
   const MOEDA_TOKEN = 'ZXQMOEDA_CIFRAOQXZ';
   const CODIGO_TOKEN = 'ZXQCODIGO_OBSIDIAN_';
 
+  const FUNCOES_MATEMATICAS = new Set([
+    'sin', 'cos', 'tan', 'arcsin', 'arccos', 'arctan',
+    'sinh', 'cosh', 'tanh', 'log', 'ln', 'lim',
+    'max', 'min', 'exp', 'det', 'gcd', 'mod', 'dx', 'dy', 'dz', 'dt'
+  ]);
+
   function decodificarHTML(texto) {
     return texto
       .replace(/&#x([0-9a-f]+);/gi, (m, h) => {
@@ -282,13 +288,61 @@ const {
     };
   }
 
+  function removerComandosTextoLatex(expressao) {
+    let texto = expressao;
+    let anterior;
+    do {
+      anterior = texto;
+      texto = texto.replace(/\\(?:text|mathrm|mathbf|mathit|operatorname)\s*\{([^{}]*)\}/g, ' ');
+    } while (texto !== anterior);
+    return texto;
+  }
+
+  function ehProsaOuTitulo(expressao) {
+    const semTextoLatex = removerComandosTextoLatex(expressao);
+
+    // Rejeita palavras com acentuação portuguesa fora de \text{...} (ex.: "REDUÇÃO", "RECUPERÁVEL")
+    if (/[À-ÿ]/.test(semTextoLatex)) return true;
+
+    // Rejeita duas ou mais palavras seguidas separadas por espaço sem operadores matemáticos
+    // (ex.: "NBC TSP 09/NBC TSP 10", "ATIVO IMOBILIZADO")
+    const semComandos = semTextoLatex.replace(/\\[a-zA-Z]+/g, ' ').replace(/[{}]/g, ' ');
+    const paresPalavras = [...semComandos.matchAll(/\b([A-Za-z]{2,})\s+([A-Za-z]{2,})\b/g)];
+    if (
+      paresPalavras.some(
+        ([, p1, p2]) =>
+          !FUNCOES_MATEMATICAS.has(p1.toLowerCase()) &&
+          !FUNCOES_MATEMATICAS.has(p2.toLowerCase())
+      )
+    ) {
+      return true;
+    }
+
+    return !ehIdentificadorMatematicoValido(semTextoLatex);
+  }
+
   function pareceFormula(expressao) {
     const e = expressao.trim();
     if (!e) return false;
+    if (ehProsaOuTitulo(e)) return false;
+
     if (/\\(?:frac|dfrac|tfrac|sqrt|sum|prod|int|times|cdot|div|log|ln|lim|pi|alpha|beta|theta|overline|mathbf|text|left|right)\b/.test(e)) return true;
-    if (/[=+*/^_]/.test(e)) return true;
+    if (/[=+\*/^_]/.test(e)) return true;
     if (/\d\s*[-+]\s*\d/.test(e)) return true;
     return /^[A-Za-z](?:_[A-Za-z0-9{}]+)?$/.test(e);
+  }
+
+  function limparFalsosDelimitadoresInline(texto) {
+    return texto.replace(/(?<!\$)\$(?!\$)([^$\n]+?)(?<!\\)\$(?!\$)/g, (m, conteudo) => {
+      const expr = conteudo.trim();
+      if (!expr) return m;
+      // Preserva qualquer expressão com comandos LaTeX (\frac, \text, etc.) ou operadores fortes
+      if (/\\[a-zA-Z]+/.test(expr) || /[=^_+<>*±∑√×÷≤≥≠≈]/.test(expr)) {
+        return m;
+      }
+      // Remove cifrões apenas quando o conteúdo for claramente prosa/título normativo
+      return ehProsaOuTitulo(expr) ? expr : m;
+    });
   }
 
   function expressaoLaTeXCompleta(expressao) {
@@ -460,7 +514,7 @@ const {
         .replace(/×/g, '\\times')
         .replace(/−/g, '-');
 
-      formula = formula.replace(/([(+\-*/=])ir(?=[)\s*/+\-=])/g, '$1i_r');
+      formula = formula.replace(/([+\-*/=])ir(?=[)\s*/+\-=])/g, '$1i_r');
       formula = formula.replace(/(\d),(\d)/g, '$1{,}$2');
 
       return `$${formula}$`;
@@ -525,7 +579,7 @@ const {
   }
 
   function escaparPercentualEmMatematica(texto) {
-    return texto.replace(/(\$\$[\s\S]*?\$\$|(?<!\$)\$(?!\$)[^$\n]+?(?<!\\)\$(?!\$))/g, (formula) => {
+    return texto.replace(/(\$\$[\s\S]*?\$\$|(?<!\\)\$(?!\$)[^$\n]+?(?<!\\)\$(?!\$))/g, (formula) => {
       return formula.replace(/(?<=\d)([ \t]*)%(?![A-Za-z])/g, '$1\\%');
     });
   }
@@ -533,12 +587,19 @@ const {
   function converterColchetesMatematicos(texto) {
     return texto.replace(/(?<!\\left)\[([^\[\]\n]+?)\](?!\s*\()/g, (m, conteudo) => {
       const expressao = conteudo.trim();
-      // Ignora checkboxes Markdown ([ ], [x], [X]) e notas de rodapé ([^1])
-      if (/^[xX ]$/.test(expressao) || expressao.startsWith('^')) return m;
+      // Ignora checkboxes Markdown ([ ], [x], [X]), notas de rodapé ([^1]), callouts ([!INFO]) e faixas numéricas ([1-3])
+      if (
+        /^[xX ]$/.test(expressao) ||
+        expressao.startsWith('^') ||
+        /^![A-Za-z0-9_-]+/.test(expressao) ||
+        /^\d+(?:\s*[-–—,]\s*\d+)*$/.test(expressao)
+      ) {
+        return m;
+      }
 
       const temComandoOuOperador =
         /\\[a-zA-Z]+/.test(expressao) ||
-        /[=+*/^_]/.test(expressao) ||
+        /[=+\*/^_]/.test(expressao) ||
         /\d\s*[-+]\s*\d/.test(expressao);
 
       return temComandoOuOperador && pareceFormula(expressao) ? `$${expressao}$` : m;
@@ -646,7 +707,7 @@ const {
 
       const temEnfaseMarkdown =
         /\*\*|__/.test(conteudo) ||
-        /(?:^|[\s(])[*_][^\s*_]|[^\s*_][*_](?:[\s.,;:)]|$)/.test(conteudo);
+        /(?:^|[\s(])[*_][^\s*_]|[^\s*_][*_](?:[\s.,;:)\]]|$)/.test(conteudo);
 
       const semComandos = conteudo
         .replace(/\\(?:text|mathrm|mathbf|mathit|operatorname)\s*\{[^{}]*\}/g, ' ')
@@ -654,11 +715,6 @@ const {
         .replace(/[{}]/g, ' ');
 
       const palavras = semComandos.match(/[A-Za-zÀ-ÿ]+/g) || [];
-      const funcoesPermitidas = new Set([
-        'sin', 'cos', 'tan', 'arcsin', 'arccos', 'arctan',
-        'sinh', 'cosh', 'tanh', 'log', 'ln', 'lim',
-        'max', 'min', 'exp', 'det', 'gcd', 'mod', 'dx', 'dy', 'dz', 'dt'
-      ]);
       const palavrasProsa = new Set([
         'de', 'do', 'da', 'dos', 'das', 'em', 'no', 'na', 'nos', 'nas',
         'com', 'por', 'para', 'que', 'se', 'ou', 'as', 'os', 'um', 'uma',
@@ -671,7 +727,7 @@ const {
           if (/[À-ÿ]/.test(p)) return true;
           const low = p.toLowerCase();
           if (palavrasProsa.has(low)) return true;
-          return p.length >= 4 && !funcoesPermitidas.has(low);
+          return p.length >= 4 && !FUNCOES_MATEMATICAS.has(low);
         });
 
       const temOperador = /(?:=|<|>|\\implies|\\Longrightarrow|\\Rightarrow)/.test(conteudo);
@@ -780,6 +836,31 @@ const {
     return partes.join('');
   }
 
+  function ehIdentificadorMatematicoValido(formula) {
+    // Remove tokens monetários, comandos LaTeX, subscritos válidos e chamadas de função curtas
+    let semTokensValidos = formula
+      .split(MOEDA_TOKEN)
+      .join(' ')
+      .replace(/\\[a-zA-Z]+/g, ' ')
+      .replace(/\b([A-Za-z][A-Za-z0-9]{0,3})_(?:\{[^{}\n]+\}|\([^()\n]+\)|[A-Za-z0-9]+)\b/g, ' ')
+      .replace(/\b([A-Za-z][A-Za-z0-9]{0,5})\([^()\n]+\)/g, (m, fn) =>
+        !/[À-ÿ]/.test(fn) && (fn.length <= 4 || FUNCOES_MATEMATICAS.has(fn.toLowerCase())) ? ' ' : m
+      )
+      .replace(/\b\d+(?:[.,]\d+)?(?:%|[kKmM])?\b/g, ' ');
+
+    const palavras = semTokensValidos.match(/[A-Za-zÀ-ÿ]+/g) || [];
+    for (const palavra of palavras) {
+      // Rejeita palavras com acentuação portuguesa (ex.: "exaustão", "concessão", "período")
+      if (/[À-ÿ]/.test(palavra)) return false;
+      if (palavra.length === 1) continue;
+      if (FUNCOES_MATEMATICAS.has(palavra.toLowerCase())) continue;
+      if (palavra.length > 6) return false;
+      // Rejeita substantivos/palavras comuns em prosa (ex.: "Prazo", "Taxa", "Anos", "total")
+      if (/^[A-Za-z][a-z]{2,}$/.test(palavra)) return false;
+    }
+    return true;
+  }
+
   function converterEquacoesEmParagrafos(texto) {
     const linhas = texto.split('\n');
 
@@ -815,34 +896,48 @@ const {
       return transformarForaDeMatematica(linha, (trecho) =>
         transformarComEnfaseMarkdown(trecho, (subTrecho) =>
           subTrecho.replace(padrao, (correspondencia, anterior, formula, offset) => {
-          if (anterior === '(' && /_\s*$/.test(subTrecho.slice(0, offset))) {
-            return correspondencia;
-          }
+            if (anterior === '(' && /_\s*$/.test(subTrecho.slice(0, offset))) {
+              return correspondencia;
+            }
 
-          const limpo = formula.trim();
+            const limpo = formula.trim();
 
-          const possuiEstruturaMatematica =
-            /[-+*/×÷_]/.test(limpo) ||
-            /[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ0-9]*\(/.test(limpo);
+            if (!ehIdentificadorMatematicoValido(limpo)) {
+              return correspondencia;
+            }
 
-          const ehAtribuicaoMatematica =
-            /^[A-Za-z]{1,4}\s*=\s*[-+]?\s*\d+(?:[.,]\d+)?$/.test(limpo);
+            // Evita fatiar sintagmas nominais em prosa (ex.: "... / Qtd de Meses")
+            const sufixoContexto = subTrecho.slice(offset + correspondencia.length);
+            if (
+              /[A-Za-z]{2,}$/.test(limpo) &&
+              /^\s+(?:de|do|da|dos|das|em|no|na|nos|nas|com|por|para|que|se|ou|ao|aos|pelo|pela|entre|sobre|até)\b/i.test(sufixoContexto)
+            ) {
+              return correspondencia;
+            }
 
-          if (!possuiEstruturaMatematica && !ehAtribuicaoMatematica) {
-            return correspondencia;
-          }
+            const possuiEstruturaMatematica =
+              /[-+*/×÷_]/.test(limpo) ||
+              /[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ0-9]*\(/.test(limpo);
 
-          const formatada = limpo
-            .replace(/\s*=\s*/g, ' = ')
-            .replace(/\s*×\s*/g, ' \\times ')
-            .replace(/\s*÷\s*/g, ' \\div ')
-            .replace(/\(\s+/g, '(')
-            .replace(/\s+\)/g, ')')
-            .replace(/\s{2,}/g, ' ')
-            .trim();
+            const ehAtribuicaoMatematica =
+              /^[A-Za-z]{1,4}\s*=\s*[-+]?\s*\d+(?:[.,]\d+)?$/.test(limpo);
 
-          return `${anterior}$${formatada}$`;
-        })
+            if (!possuiEstruturaMatematica && !ehAtribuicaoMatematica) {
+              return correspondencia;
+            }
+
+            const formatada = limpo
+              .replace(/\s*=\s*/g, ' = ')
+              .replace(/\s*×\s*/g, ' \\times ')
+              .replace(/\s*÷\s*/g, ' \\div ')
+              .replace(/\(\s+/g, '(')
+              .replace(/\s+\)/g, ')')
+              .replace(/(?<!\\)%/g, '\\%')
+              .replace(/\s{2,}/g, ' ')
+              .trim();
+
+            return `${anterior}$${formatada}$`;
+          })
         )
       );
     }).join('\n');
@@ -917,55 +1012,55 @@ const {
 
       return transformarForaDeMatematica(linha, (trecho) =>
         transformarComEnfaseMarkdown(trecho, (subTrecho) => {
-        let resultado = subTrecho;
+          let resultado = subTrecho;
 
-        // Somatórios: ∑_(i=1)^n x_i
-        resultado = resultado.replace(
-          /[∑Σ]\s*_\s*\(([^()\n]+)\)\s*\^\s*([A-Za-z0-9]+)\s+([A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)?)/g,
-          (_, inferior, superior, termo) => {
-            const indice = normalizarSubscritosEExpoentes(termo);
-            return delimitar(`\\sum_{${inferior}}^{${superior}} ${indice}`);
-          }
-        );
+          // Somatórios: ∑_(i=1)^n x_i
+          resultado = resultado.replace(
+            /[∑Σ]\s*_\s*\(([^()\n]+)\)\s*\^\s*([A-Za-z0-9]+)\s+([A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)?)/g,
+            (_, inferior, superior, termo) => {
+              const indice = normalizarSubscritosEExpoentes(termo);
+              return delimitar(`\\sum_{${inferior}}^{${superior}} ${indice}`);
+            }
+          );
 
-        // Raízes: √(25) -> \sqrt{25}
-        resultado = resultado.replace(
-          /√\s*\(([^()\n]+)\)/g,
-          (_, radicando) => delimitar(`\\sqrt{${radicando}}`)
-        );
+          // Raízes: √(25) -> \sqrt{25}
+          resultado = resultado.replace(
+            /√\s*\(([^()\n]+)\)/g,
+            (_, radicando) => delimitar(`\\sqrt{${radicando}}`)
+          );
 
-        // Expoentes negativos: A^(-1), (1+i)^(-1)
-        resultado = resultado.replace(
-          /(\([^()\n]+\)|[A-Za-z])\^\((-?\d+)\)/g,
-          (_, base, expoente) => delimitar(`${base}^{${expoente}}`)
-        );
+          // Expoentes negativos: A^(-1), (1+i)^(-1)
+          resultado = resultado.replace(
+            /(\([^()\n]+\)|[A-Za-z])\^\((-?\d+)\)/g,
+            (_, base, expoente) => delimitar(`${base}^{${expoente}}`)
+          );
 
-        // Expoentes Unicode protegidos antes da normalização NFKC
-        resultado = resultado.replace(
-          /(?!ZXQMATH\d+QXZ)([A-Za-z])((?:ZXQEXP[0-9]QXZ)+)/g,
-          (_, base, marcadores) => {
-            const expoente = [...marcadores.matchAll(/ZXQEXP([0-9])QXZ/g)]
-              .map((m) => m[1])
-              .join('');
-            return delimitar(`${base}^{${expoente}}`);
-          }
-        );
+          // Expoentes Unicode protegidos antes da normalização NFKC
+          resultado = resultado.replace(
+            /(?!ZXQMATH\d+QXZ)([A-Za-z])((?:ZXQEXP[0-9]QXZ)+)/g,
+            (_, base, marcadores) => {
+              const expoente = [...marcadores.matchAll(/ZXQEXP([0-9])QXZ/g)]
+                .map((m) => m[1])
+                .join('');
+              return delimitar(`${base}^{${expoente}}`);
+            }
+          );
 
-        // Subscritos explícitos: C_(N,n) -> C_{N,n}
-        resultado = resultado.replace(
-          /(?!ZXQMATH\d+QXZ)([A-Za-z])_\(([^()\n]+)\)/g,
-          (_, base, indice) => delimitar(`${base}_{${indice}}`)
-        );
+          // Subscritos explícitos: C_(N,n) -> C_{N,n}
+          resultado = resultado.replace(
+            /(?!ZXQMATH\d+QXZ)([A-Za-z])_\(([^()\n]+)\)/g,
+            (_, base, indice) => delimitar(`${base}_{${indice}}`)
+          );
 
-        return resultado;
-      })
+          return resultado;
+        })
       );
     }).join('\n');
   }
 
   function restaurarMoeda(texto) {
     // Dentro de blocos/expressões matemáticas, formata R$ com \text{R\$ } sem aninhar \text{...}
-    texto = texto.replace(/(\$\$[\s\S]*?\$\$|(?<!\$)\$(?!\$)[^$\n]+?(?<!\\)\$(?!\$))/g, (formula) => {
+    texto = texto.replace(/(\$\$[\s\S]*?\$\$|(?<!\\)\$(?!\$)[^$\n]+?(?<!\\)\$(?!\$))/g, (formula) => {
       let f = formula.replace(
         new RegExp(`\\\\text\\{${MOEDA_TOKEN}\\s*\\}\\s*`, 'g'),
         '\\text{R\\$ }'
@@ -1013,6 +1108,7 @@ const {
 
     s = corrigirDelimitadoresDuplicadosEmBlocos(s);
     s = converterDelimitadoresLatex(s);
+    s = limparFalsosDelimitadoresInline(s);
     s = corrigirEquacoesComDelimitadoresParciais(s);
     s = escaparPercentualEmMatematica(s);
     s = converterColchetesMatematicos(s);
@@ -1474,7 +1570,7 @@ class GNMathNormalizer extends Plugin {
         /\\+\[[^\n]*?\\+\]/.test(corpo) ||
         /\\left\\?\$[\s\S]*?\\right\\?\$/.test(corpo) ||
         /\\_(?=\{)/.test(corpo) ||
-        /\$\$[^\n]*?\$[^$\n]+\$[^$\n]*?\$\$/.test(corpo) ||
+        /\$\$[^\n]*?\$[^$\n]+\$[^\n]*?\$\$/.test(corpo) ||
         /\\text\{R\\?\$\s*\}/i.test(corpo);
 
       if (!temProblemaLaTeX) return;
